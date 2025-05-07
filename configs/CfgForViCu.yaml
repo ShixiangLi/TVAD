@@ -2,10 +2,10 @@ TRAIN:
   # ENABLE: True
   DATASET: fmf_vicu
   BATCH_SIZE: 64
-  LR: 0.002
+  LR: 0.0001
   GRAD_CLIP: 1.
   TOTAL_STEPS: 10000
-  WARMUP: 50
+  WARMUP: 500
   EMA_DECAY: 0.9999
   SAVE_STEP: 0
 DATA:
@@ -23,7 +23,7 @@ SOLVER:
   STEPS: [20]
   MAX_EPOCH: 30
 MODEL:
-  T: 100
+  T: 1000
   CONDITION_IN: 3
   EMBED_DIM: 128
   CHANNEL_MULT: [1, 2, 2, 2]
@@ -43,12 +43,12 @@ DIFFUSION:
   MEAN_TYPE: 'epsilon'
   VAR_TYPE: 'fixedlarge'
   SAMPLE_SIZE: 64
-  SAMPLE_STEP: 0
+  SAMPLE_STEP: 500
 TEST:
   MODE: 'l2'
   DATASET: fmf_vicu
   BATCH_SIZE: 64
-  EVAL_STEP: 1
+  EVAL_STEP: 0
   NUM_IMAGES: 10
   FID_USE_TORCH: False
   FID_CACHE: './stats/ffm.train.npz'

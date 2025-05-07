@@ -25,9 +25,9 @@ def build_sampler(cfg, model):
     )
     return sampler
 
-def build_trainer(cfg):
+def build_trainer(cfg, model):
     trainer = GaussianDiffusionTrainer(
-        model=build_model(cfg),
+        model=model,
         beta_1=cfg.DIFFUSION.BETA_1,
         beta_T=cfg.DIFFUSION.BETA_T,
         T=cfg.MODEL.T

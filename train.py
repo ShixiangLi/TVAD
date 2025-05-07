@@ -1,20 +1,15 @@
 import copy
 import json
 import os
-import warnings
 from tqdm import tqdm
 import numpy as np
 
 import torch
 from tensorboardX import SummaryWriter
-from torchvision.datasets import CIFAR10
 from torchvision.utils import make_grid, save_image
-from torchvision import transforms
-import torchvision
 from tqdm import trange
 from scipy.ndimage import gaussian_filter
 
-from models.diffusion import GaussianDiffusionTrainer, GaussianDiffusionSampler
 from models.model import build_model, build_sampler, build_trainer
 from datasets.dataset import fmf_vicu
 from utils.parser import parse_args, load_config
@@ -89,12 +84,12 @@ def train():
     # dataset
     print('[{}] Loading data set...'.format(get_time()))
     dataset = fmf_vicu(cfg=cfg, split='train')
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=False,
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=True,
                                              num_workers=cfg.DATA_LOADER.NUM_WORKERS, pin_memory=cfg.DATA_LOADER.PIN_MEMORY)
     datalooper = infiniteloop(dataloader)
 
     val_dataset = fmf_vicu(cfg=cfg, split='test')
-    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=cfg.TEST.BATCH_SIZE, shuffle=False,
+    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=cfg.TEST.BATCH_SIZE, shuffle=True,
                                                  num_workers=cfg.DATA_LOADER.NUM_WORKERS, pin_memory=cfg.DATA_LOADER.PIN_MEMORY)
 
     # model setup
@@ -102,7 +97,7 @@ def train():
     ema_model = copy.deepcopy(net_model)
     optim = torch.optim.Adam(net_model.parameters(), lr=cfg.TRAIN.LR)
     sched = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda=lambda step: warmup_lr(step, cfg))
-    trainer = build_trainer(cfg).to(device)
+    trainer = build_trainer(cfg, net_model).to(device)
     net_sampler = build_sampler(cfg, net_model).to(device)
     ema_sampler = build_sampler(cfg, ema_model).to(device)
     if cfg.MODEL.PARALLEL:
@@ -197,30 +192,6 @@ def train():
                     metrics['step'] = step
                     f.write(json.dumps(metrics) + "\n")
     writer.close()
-
-
-def eval():
-    # cfg
-    args = parse_args()
-    cfg = load_config(args)
-
-    # model setup
-    model = build_model(cfg)
-    sampler = build_sampler(cfg, model)
-    if cfg.MODEL.PARALLEL:
-        sampler = torch.nn.DataParallel(sampler)
-
-    # load model and evaluate
-    ckpt = torch.load(os.path.join(cfg.COMMON.LOGDIR, 'ckpt.pt'))
-
-    model.load_state_dict(ckpt['ema_model'])
-    (IS, IS_std), FID, samples = evaluate(sampler, model)
-    print("Model(EMA): IS:%6.3f(%.3f), FID:%7.3f" % (IS, IS_std, FID))
-    save_image(
-        torch.tensor(samples[:256]),
-        os.path.join(cfg.COMMON.LOGDIR, 'samples_ema.png'),
-        nrow=16)
-
 
 def main():
     train()
