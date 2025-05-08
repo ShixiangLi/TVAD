@@ -77,7 +77,7 @@ class ViCuDataset(Dataset):
                                  std=[0.229, 0.224, 0.225])
         ])
 
-    def _filter_data(self, train=True, normal_test_ratio=0.3, abnormal_test_ratio=0.3):
+    def _filter_data(self, train=True, normal_test_ratio=0.01, abnormal_test_ratio=0.001):
         """
         过滤训练集或测试集样本：
         - 训练集：仅保留所有正常样本（label 全为 0）

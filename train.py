@@ -5,6 +5,7 @@ from tqdm import tqdm
 import numpy as np
 
 import torch
+import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 from torchvision.utils import make_grid, save_image
 from tqdm import trange
@@ -23,8 +24,7 @@ def ema(source, target, decay):
     target_dict = target.state_dict()
     for key in source_dict.keys():
         target_dict[key].data.copy_(
-            target_dict[key].data * decay +
-            source_dict[key].data * (1 - decay))
+            target_dict[key].data * decay + source_dict[key].data * (1 - decay))
 
 
 def infiniteloop(dataloader):
@@ -36,8 +36,21 @@ def infiniteloop(dataloader):
 def warmup_lr(step, cfg):
     return min(step, cfg.TRAIN.WARMUP) / cfg.TRAIN.WARMUP
 
-def anomaly_pred(original, generated):
+def apply_gaussian_filter(score, sigma=4):
+    # Create 2D Gaussian kernel
+    size = int(2 * sigma + 1)
+    coords = torch.arange(size, dtype=torch.float32) - sigma
+    grid = coords[None, :]**2 + coords[:, None]**2
+    kernel = torch.exp(-0.5 * grid / sigma**2)
+    kernel = kernel / kernel.sum()
+    kernel = kernel.to(score.device)[None, None, :, :]
 
+    # Apply kernel (depthwise conv2d)
+    score = score[:, None, :, :]  # (B, 1, H, W)
+    score = F.conv2d(score, kernel, padding=sigma, groups=1)
+    return score[:, 0, :, :]  # (B, H, W)
+
+def anomaly_pred(original, generated):
     l2_criterion = torch.nn.MSELoss(reduction='none')
     cos_criterion = torch.nn.CosineSimilarity(dim=-1)
 
@@ -45,11 +58,13 @@ def anomaly_pred(original, generated):
     input = original.permute(0, 2, 3, 1).reshape(N, -1, D)
     output = generated.permute(0, 2, 3, 1).reshape(N, -1, D)
     score = torch.mean(l2_criterion(input, output), dim=-1) + 1 - cos_criterion(input, output)
-    score = score.reshape(score.shape[0], H, W)
-    for i in range(score.shape[0]):
-        score[i] = torch.tensor(gaussian_filter(score[i], sigma=4))
-    threshold = np.percentile(score, 99)
-    pred_label = np.asarray(score >= threshold, dtype=int)
+    score = score.reshape(N, H, W)
+
+    score = apply_gaussian_filter(score, sigma=4)
+
+    threshold = torch.quantile(score.view(N, -1), 0.99, dim=1)
+    pred_label = (score >= threshold[:, None, None]).int().cpu().numpy()
+
     return pred_label
 
 def evaluate(sampler, model, cfg, val_loader):
@@ -58,11 +73,10 @@ def evaluate(sampler, model, cfg, val_loader):
 
     with torch.no_grad():
         images = []
-        for i,  xyz, in enumerate(tqdm(val_loader, ncols=100, desc='Testing')):
-            label = xyz[-1]
-            c = xyz[0]
-            x = xyz[1]
-            x_T = torch.randn((cfg.TEST.BATCH_SIZE, 3, cfg.DATA.IMAGE_SIZE, cfg.DATA.IMAGE_SIZE))
+        for i, (current_sample, video_sample, label) in enumerate(tqdm(val_loader, ncols=100, desc='Testing')):
+            c = current_sample
+            x = video_sample
+            x_T = torch.randn((c.shape[0], 3, cfg.DATA.IMAGE_SIZE, cfg.DATA.IMAGE_SIZE))
             batch_images = sampler(x_T.to(device), c.to(device)).cpu()
             images.append((batch_images + 1) / 2)
             scores = anomaly_pred(x, batch_images)
@@ -109,9 +123,7 @@ def train():
     if not os.path.exists(cfg.COMMON.LOGDIR):
         os.makedirs(os.path.join(cfg.COMMON.LOGDIR, 'sample'))
     x_T = torch.randn(cfg.TRAIN.BATCH_SIZE, 3, cfg.DATA.IMAGE_SIZE, cfg.DATA.IMAGE_SIZE)
-    # c_T = torch.randn(cfg.TRAIN.BATCH_SIZE, 3)
     x_T = x_T.to(device)
-    # c_T = c_T.to(device)
     grid = (make_grid(next(iter(dataloader))[0][:cfg.DIFFUSION.SAMPLE_SIZE]) + 1) / 2
     writer = SummaryWriter(cfg.COMMON.LOGDIR)
     writer.add_image('real_sample', grid)
@@ -145,7 +157,8 @@ def train():
             pbar.set_postfix(loss='%.3f' % loss)
 
             # sample
-            if cfg.DIFFUSION.SAMPLE_STEP > 0 and step % cfg.DIFFUSION.SAMPLE_STEP == 0:
+            if cfg.DIFFUSION.SAMPLE_STEP > 0 and step % cfg.DIFFUSION.SAMPLE_STEP == 0 and step > 0:
+                print("\nSampling...")
                 net_model.eval()
                 with torch.no_grad():
                     x_0 = ema_sampler(x_T, c_0)
@@ -157,7 +170,8 @@ def train():
                 net_model.train()
 
             # save
-            if cfg.TRAIN.SAVE_STEP > 0 and step % cfg.TRAIN.SAVE_STEP == 0:
+            if cfg.TRAIN.SAVE_STEP > 0 and step % cfg.TRAIN.SAVE_STEP == 0 and step > 0:
+                print("Saving...")
                 ckpt = {
                     'net_model': net_model.state_dict(),
                     'ema_model': ema_model.state_dict(),
@@ -169,7 +183,8 @@ def train():
                 torch.save(ckpt, os.path.join(cfg.COMMON.LOGDIR, 'ckpt.pt'))
 
             # evaluate
-            if cfg.TEST.EVAL_STEP > 0 and step % cfg.TEST.EVAL_STEP == 0:
+            if cfg.TEST.EVAL_STEP > 0 and step % cfg.TEST.EVAL_STEP == 0 and step > 0:
+                print("Evaluating...")
                 acc, f1, fdr, mdr, images = evaluate(net_sampler, net_model, cfg, val_dataloader)
                 ema_acc, ema_f1, ema_fdr, ema_mdr, ema_images = evaluate(ema_sampler, ema_model, cfg, val_dataloader)
                 metrics = {
