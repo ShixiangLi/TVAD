@@ -1,0 +1,11 @@
+# 忽略 checkpoints 文件夹 (通常在项目根目录)
+checkpoints/
+
+# 忽略 data 文件夹 (通常在项目根目录)
+data/
+
+# 忽略 logs 文件夹 (通常在项目根目录)
+logs/
+
+# 忽略所有 __pycache__ 文件夹，无论它们在哪个子目录中
+__pycache__/
