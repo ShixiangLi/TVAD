@@ -2,6 +2,9 @@
 refer to https://github.com/jfzhang95/pytorch-deeplab-xception/blob/master/utils/metrics.py
 """
 import numpy as np
+import torch
+import torch.nn.functional as F
+from tqdm import tqdm
 
 
 class ClassificationMetric:
@@ -145,3 +148,63 @@ class Container:
 
         for k, num in zip(self.metricNames, metricNums):
             self.container[k].append(num)
+
+def apply_gaussian_filter(score, sigma=4):
+    # Create 2D Gaussian kernel
+    size = int(2 * sigma + 1)
+    coords = torch.arange(size, dtype=torch.float32) - sigma
+    grid = coords[None, :]**2 + coords[:, None]**2
+    kernel = torch.exp(-0.5 * grid / sigma**2)
+    kernel = kernel / kernel.sum()
+    kernel = kernel.to(score.device)[None, None, :, :]
+
+    # Apply kernel (depthwise conv2d)
+    score = score[:, None, :, :]  # (B, 1, H, W)
+    score = F.conv2d(score, kernel, padding=sigma, groups=1)
+    return score[:, 0, :, :]  # (B, H, W)
+
+def anomaly_pred(original, generated):
+    l2_criterion = torch.nn.MSELoss(reduction='none')
+    cos_criterion = torch.nn.CosineSimilarity(dim=-1)
+
+    N, D, H, W = original.shape
+    input = original.permute(0, 2, 3, 1).reshape(N, -1, D)
+    output = generated.permute(0, 2, 3, 1).reshape(N, -1, D)
+    score = torch.mean(l2_criterion(input, output), dim=-1) + 1 - cos_criterion(input, output)
+    score = score.reshape(N, H, W)
+
+    score = apply_gaussian_filter(score, sigma=4)
+
+    threshold = torch.quantile(score.view(N, -1), 0.99, dim=1)
+    pred_label = (score >= threshold[:, None, None]).int().cpu().numpy()
+
+    return pred_label
+
+def evaluate(sampler, model, cfg, val_loader, device):
+    class_metric = ClassificationMetric(numClass=cfg.MODEL.NUM_CLASSES)
+    pixel_metric = SegmentationMetric(numClass=cfg.MODEL.NUM_CLASSES)
+    model.eval()
+
+    with torch.no_grad():
+        images = []
+        for i, (current_sample, video_sample, label) in enumerate(tqdm(val_loader, ncols=100, desc='Testing')):
+            c = current_sample
+            x = video_sample
+            x_T = torch.randn((c.shape[0], 3, cfg.DATA.IMAGE_SIZE, cfg.DATA.IMAGE_SIZE))
+            batch_images = sampler(x_T.to(device), c.to(device)).cpu()
+            images.append((batch_images + 1) / 2)
+            scores = anomaly_pred(x, batch_images)
+            class_metric.addBatch(scores, label.numpy())
+            pixel_metric.addBatch(scores, label.numpy())
+        images = torch.cat(images, dim=0).numpy()
+        img_acc = class_metric.Accuracy()
+        img_f1 = class_metric.F1Score()
+        img_fdr = class_metric.FalsePositiveRate()
+        img_mdr = class_metric.FalseNegativeRate()
+        pix_acc = pixel_metric.pixelAccuracy()
+        pix_mIoU = pixel_metric.meanIntersectionOverUnion()
+        print(f"Image Accuracy: {img_acc:.4f}, Image F1 Score: {img_f1:.4f}, Image FDR: {img_fdr:.4f}, Image MDR: {img_mdr:.4f}")
+        print(f"Pixel Accuracy: {pix_acc:.4f}, Pixel mIoU: {pix_mIoU:.4f}")
+
+        model.train()
+        return img_acc, img_f1, img_fdr, img_mdr, images

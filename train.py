@@ -15,7 +15,7 @@ from models.model import build_model, build_sampler, build_trainer
 from datasets.dataset import fmf_vicu
 from utils.parser import parse_args, load_config
 from utils.others import get_time
-from utils.metrics import ClassificationMetric
+from utils.metrics import evaluate
 
 device = torch.device('cuda:0')
 
@@ -32,63 +32,8 @@ def infiniteloop(dataloader):
         for current_sample, video_sample, label in iter(dataloader):
             yield video_sample, current_sample, label
 
-
 def warmup_lr(step, cfg):
     return min(step, cfg.TRAIN.WARMUP) / cfg.TRAIN.WARMUP
-
-def apply_gaussian_filter(score, sigma=4):
-    # Create 2D Gaussian kernel
-    size = int(2 * sigma + 1)
-    coords = torch.arange(size, dtype=torch.float32) - sigma
-    grid = coords[None, :]**2 + coords[:, None]**2
-    kernel = torch.exp(-0.5 * grid / sigma**2)
-    kernel = kernel / kernel.sum()
-    kernel = kernel.to(score.device)[None, None, :, :]
-
-    # Apply kernel (depthwise conv2d)
-    score = score[:, None, :, :]  # (B, 1, H, W)
-    score = F.conv2d(score, kernel, padding=sigma, groups=1)
-    return score[:, 0, :, :]  # (B, H, W)
-
-def anomaly_pred(original, generated):
-    l2_criterion = torch.nn.MSELoss(reduction='none')
-    cos_criterion = torch.nn.CosineSimilarity(dim=-1)
-
-    N, D, H, W = original.shape
-    input = original.permute(0, 2, 3, 1).reshape(N, -1, D)
-    output = generated.permute(0, 2, 3, 1).reshape(N, -1, D)
-    score = torch.mean(l2_criterion(input, output), dim=-1) + 1 - cos_criterion(input, output)
-    score = score.reshape(N, H, W)
-
-    score = apply_gaussian_filter(score, sigma=4)
-
-    threshold = torch.quantile(score.view(N, -1), 0.99, dim=1)
-    pred_label = (score >= threshold[:, None, None]).int().cpu().numpy()
-
-    return pred_label
-
-def evaluate(sampler, model, cfg, val_loader):
-    test_metric = ClassificationMetric(numClass=cfg.MODEL.NUM_CLASSES)
-    model.eval()
-
-    with torch.no_grad():
-        images = []
-        for i, (current_sample, video_sample, label) in enumerate(tqdm(val_loader, ncols=100, desc='Testing')):
-            c = current_sample
-            x = video_sample
-            x_T = torch.randn((c.shape[0], 3, cfg.DATA.IMAGE_SIZE, cfg.DATA.IMAGE_SIZE))
-            batch_images = sampler(x_T.to(device), c.to(device)).cpu()
-            images.append((batch_images + 1) / 2)
-            scores = anomaly_pred(x, batch_images)
-            test_metric.addBatch(scores, label)
-        images = torch.cat(images, dim=0).numpy()
-        acc = test_metric.Accuracy()
-        f1 = test_metric.F1Score()
-        fdr = test_metric.FalsePositiveRate()
-        mdr = test_metric.FalseNegativeRate()
-
-    model.train()
-    return acc, f1, fdr, mdr, images
 
 def train():
     # cfg
@@ -180,13 +125,13 @@ def train():
                     'step': step,
                     'x_T': x_T,
                 }
-                torch.save(ckpt, os.path.join(cfg.COMMON.LOGDIR, 'ckpt.pt'))
+                torch.save(ckpt, os.path.join(cfg.COMMON.CHECKPOINTS, 'ckpt.pt'))
 
             # evaluate
             if cfg.TEST.EVAL_STEP > 0 and step % cfg.TEST.EVAL_STEP == 0 and step > 0:
                 print("Evaluating...")
-                acc, f1, fdr, mdr, images = evaluate(net_sampler, net_model, cfg, val_dataloader)
-                ema_acc, ema_f1, ema_fdr, ema_mdr, ema_images = evaluate(ema_sampler, ema_model, cfg, val_dataloader)
+                acc, f1, fdr, mdr, _ = evaluate(net_sampler, net_model, cfg, val_dataloader, device)
+                ema_acc, ema_f1, ema_fdr, ema_mdr, _ = evaluate(ema_sampler, ema_model, cfg, val_dataloader, device)
                 metrics = {
                     'ACC': acc,
                     'F1': f1,

@@ -35,7 +35,7 @@ MODEL:
   IMAGE_PATCH_SIZE: 8
   FRAME_PATCH_SIZE: 2
   ADDITIONAL_TOKENS: True
-  PRETRAINED: './state_dict_vicu_cls.pth'
+  PRETRAINED: 'checkpoints/ckpt.pt'
   PARALLEL: False
 DIFFUSION:
   BETA_1: 0.0001
@@ -57,6 +57,7 @@ DATA_LOADER:
   PIN_MEMORY: True
 COMMON:
   LOGDIR: './logs/DDPM_FFM_EPS'
+  CHECKPOINTS: './checkpoints'
 OUTPUT_DIR: ''
 PRINT_FREQ: 100
 TASK: segmentation
