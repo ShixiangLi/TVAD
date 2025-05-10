@@ -43,7 +43,7 @@ DIFFUSION:
   MEAN_TYPE: 'epsilon'   # Highly recommended for DDIM. Your UNet should predict noise.
   VAR_TYPE: 'fixedlarge' # Less critical for DDIM sampling itself
   SAMPLE_SIZE: 64
-  SAMPLE_STEP: 1      # How often to sample during training
+  SAMPLE_STEP: 5000      # How often to sample during training
   
   # --- New/Modified for DDIM ---
   SAMPLER_TYPE: 'DDIM'     # Options: 'DDIM', 'DDPM'

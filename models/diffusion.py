@@ -8,6 +8,8 @@ def extract(v, t, x_shape):
     Extract some coefficients at specified timesteps, then reshape to
     [batch_size, 1, 1, 1, 1, ...] for broadcasting purposes.
     """
+    # 将 v 移动到与 t 相同的设备
+    v = v.to(t.device)  # <--- 添加此行
     out = torch.gather(v, index=t, dim=0).float()
     return out.view([t.shape[0]] + [1] * (len(x_shape) - 1))
 
@@ -36,9 +38,11 @@ class GaussianDiffusionTrainer(nn.Module):
         """
         t = torch.randint(self.T, size=(x_0.shape[0], ), device=x_0.device)
         noise = torch.randn_like(x_0.float())
+        # 注意：GaussianDiffusionTrainer 在其 forward 方法中已经对 extract 的参数做了 .to(x_0.device) 处理，
+        # 这与 extract 内部的修改是兼容的。
         x_t = (
-            extract(self.sqrt_alphas_bar.to(x_0.device), t, x_0.shape) * x_0 +
-            extract(self.sqrt_one_minus_alphas_bar.to(x_0.device), t, x_0.shape) * noise)
+            extract(self.sqrt_alphas_bar, t, x_0.shape) * x_0 + # 在 trainer 中调用时，self.sqrt_alphas_bar 已经通过 .to(t.device) 处理了（因为 t 和 x_0 在同一设备）
+            extract(self.sqrt_one_minus_alphas_bar, t, x_0.shape) * noise)
         loss = F.mse_loss(self.model(x_t, t, c_0), noise, reduction='none')
         return loss
 
@@ -118,14 +122,16 @@ class GaussianDiffusionSampler(nn.Module):
 
     def p_mean_variance(self, x_t, t, c):
         # below: only log_variance is used in the KL computations
-        model_log_var = {
+        model_log_var_data = { # Renamed to avoid conflict with outer scope
             # for fixedlarge, we set the initial (log-)variance like so to
             # get a better decoder log likelihood
             'fixedlarge': torch.log(torch.cat([self.posterior_var[1:2],
                                                self.betas[1:]])),
             'fixedsmall': self.posterior_log_var_clipped,
         }[self.var_type]
-        model_log_var = extract(model_log_var, t, x_t.shape)
+        # model_log_var is now the tensor extracted from model_log_var_data
+        model_log_var = extract(model_log_var_data, t, x_t.shape)
+
 
         # Mean parameterization
         if self.mean_type == 'xprev':       # the model predicts x_{t-1}
@@ -150,7 +156,7 @@ class GaussianDiffusionSampler(nn.Module):
         Algorithm 2.
         """
         x_t = x_T
-        c_t = c_T
+        c_t = c_T # Assuming condition c does not change with t for GaussianDiffusionSampler
         for time_step in reversed(range(self.T)):
             t = x_t.new_ones([x_T.shape[0], ], dtype=torch.long) * time_step
             mean, log_var = self.p_mean_variance(x_t=x_t, t=t, c=c_t)
@@ -162,7 +168,7 @@ class GaussianDiffusionSampler(nn.Module):
             x_t = mean + torch.exp(0.5 * log_var) * noise
         x_0 = x_t
         return torch.clip(x_0, -1, 1)
-    
+
 class DDIMSampler(nn.Module):
     def __init__(self, model, beta_1, beta_T, T, img_size=32,
                  mean_type='epsilon', eta=0.0): # eta for DDIM noise control
@@ -197,7 +203,7 @@ class DDIMSampler(nn.Module):
             extract(self.sqrt_recipm1_alphas_bar, t, x_t.shape) * eps
         )
 
-    def forward(self, x_T, c_T, num_steps=None, eta=None):
+    def forward(self, x_T, c_T, num_steps=None, eta=None): # c_T is the condition
         """
         DDIM sampling process.
         Args:
@@ -216,7 +222,7 @@ class DDIMSampler(nn.Module):
             eta = self.eta
 
         img = x_T
-        c_t = c_T # Assuming condition c does not change with t
+        c_t = c_T # Assuming condition c does not change with t for DDIMSampler based on typical usage
 
         # Define the sequence of timesteps for DDIM sampling (from T-1 down to 0)
         # This creates `num_steps` timesteps, spaced out over the original T steps.
@@ -224,11 +230,15 @@ class DDIMSampler(nn.Module):
 
         for i in range(num_steps):
             t_val = times[i]
-            t = torch.full((x_T.shape[0],), t_val, device=x_T.device, dtype=torch.long)
+            # Ensure t is created on the same device as img (which should be x_T's device)
+            t = torch.full((img.shape[0],), t_val, device=img.device, dtype=torch.long)
+
 
             # Get the previous timestep (t_prev). For the last step, t_prev is effectively -1.
             t_prev_val = times[i+1] if i < num_steps - 1 else -1
-            t_prev = torch.full((x_T.shape[0],), t_prev_val, device=x_T.device, dtype=torch.long)
+            # Ensure t_prev is created on the same device
+            t_prev = torch.full((img.shape[0],), t_prev_val, device=img.device, dtype=torch.long)
+
 
             # 1. Predict model output (epsilon or x_0)
             model_output = self.model(img, t, c_t)
@@ -242,7 +252,7 @@ class DDIMSampler(nn.Module):
                 # If model predicts x_0, derive eps for the DDIM formula
                 # eps = (x_t - sqrt(alpha_bar_t)*x_0) / sqrt(1-alpha_bar_t)
                 eps = (img - extract(self.sqrt_alphas_bar, t, img.shape) * pred_x0) / \
-                      extract(self.sqrt_one_minus_alphas_bar, t, img.shape)
+                      (extract(self.sqrt_one_minus_alphas_bar, t, img.shape) + 1e-8) # Added epsilon for stability
             else:
                 raise NotImplementedError(f"DDIM for mean_type '{self.mean_type}' is not directly supported in this script. "
                                           "Please use 'epsilon' or 'xstart'.")
@@ -251,22 +261,33 @@ class DDIMSampler(nn.Module):
             pred_x0 = torch.clamp(pred_x0, -1.0, 1.0)
 
             # 2. Get alpha_bar_t and alpha_bar_t_prev
-            alpha_bar_t = extract(self.alphas_bar, t, img.shape)
+            # The line that caused the error originally:
+            alpha_bar_t = extract(self.alphas_bar, t, img.shape) # Line 254 in the original traceback context
             # If t_prev is -1, alpha_bar_t_prev is 1 (corresponds to alpha_bar_0)
-            alpha_bar_t_prev = extract(self.alphas_bar, t_prev, img.shape) if t_prev_val >= 0 else torch.ones_like(alpha_bar_t)
+            alpha_bar_t_prev_val = extract(self.alphas_bar, t_prev, img.shape) if t_prev_val >= 0 else torch.ones_like(alpha_bar_t)
+
 
             # 3. Calculate DDIM update terms (Equation 12 from DDIM paper)
             # sigma_t = eta * sqrt((1 - alpha_bar_t_prev) / (1 - alpha_bar_t) * (1 - alpha_bar_t / alpha_bar_t_prev))
             # Ensure variance term inside sqrt is non-negative
-            variance_term_numerator = (1 - alpha_bar_t_prev)
+            variance_term_numerator = (1 - alpha_bar_t_prev_val)
             variance_term_denominator = (1 - alpha_bar_t)
-            variance_ratio = (1 - alpha_bar_t / alpha_bar_t_prev) if t_prev_val >=0 else 0 # Avoid division by zero if alpha_bar_t_prev is 0
             
+            # Avoid division by zero if alpha_bar_t_prev_val is 0 or close to 0 and t_prev_val >= 0
+            # Or if alpha_bar_t is 0 or close to 0
+            if t_prev_val >=0 and not torch.all(alpha_bar_t_prev_val > 1e-6): # check if any element is too small
+                 variance_ratio = torch.zeros_like(alpha_bar_t) # set ratio to 0 if prev is too small
+            elif t_prev_val >=0 : # alpha_bar_t_prev_val is fine
+                 variance_ratio = (1 - alpha_bar_t / (alpha_bar_t_prev_val + 1e-8)) # add epsilon for stability
+            else: # t_prev_val < 0 (last step)
+                 variance_ratio = torch.zeros_like(alpha_bar_t)
+
+
             # Handle potential division by zero or small numbers if alpha_bar_t is close to 1
             if isinstance(variance_term_denominator, torch.Tensor):
-                variance_term_denominator = torch.where(variance_term_denominator == 0, torch.ones_like(variance_term_denominator)*1e-6, variance_term_denominator)
+                variance_term_denominator = torch.where(torch.abs(variance_term_denominator) < 1e-8, torch.ones_like(variance_term_denominator)*1e-8 * torch.sign(variance_term_denominator), variance_term_denominator)
             else: # float
-                variance_term_denominator = max(variance_term_denominator, 1e-6)
+                variance_term_denominator = max(abs(variance_term_denominator), 1e-8) * (1 if variance_term_denominator >=0 else -1)
 
 
             variance = (variance_term_numerator / variance_term_denominator) * variance_ratio
@@ -278,9 +299,9 @@ class DDIMSampler(nn.Module):
             #           sqrt(1 - alpha_bar_{t-1} - sigma_t^2) * eps + 
             #           sigma_t * random_noise
             
-            term1_coeff_sqrt_alpha_bar_prev = torch.sqrt(alpha_bar_t_prev)
+            term1_coeff_sqrt_alpha_bar_prev = torch.sqrt(alpha_bar_t_prev_val)
             
-            term2_coeff_sqrt_term = 1. - alpha_bar_t_prev - sigma_t**2
+            term2_coeff_sqrt_term = 1. - alpha_bar_t_prev_val - sigma_t**2
             term2_coeff_sqrt_term = torch.clamp(term2_coeff_sqrt_term, min=0.0) # Clamp for numerical stability
             term2_coeff = torch.sqrt(term2_coeff_sqrt_term)
 
