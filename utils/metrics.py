@@ -199,7 +199,7 @@ def evaluate(sampler, model, cfg, val_loader, device):
             else: # DDPM
                 batch_images = sampler(x_T, c).cpu() # Original DDPM call
             images.append((batch_images + 1) / 2)
-            scores = anomaly_pred(x, batch_images)
+            scores = anomaly_pred(video_sample, batch_images)
             class_metric.addBatch(np.max(scores, axis=(1, 2)), np.max(label.numpy(), axis=(1, 2)))
             pixel_metric.addBatch(scores, label.numpy())
         images = torch.cat(images, dim=0).numpy()
