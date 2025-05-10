@@ -40,7 +40,7 @@ def eval():
     sampler.to(device)
 
     # evaluate
-    img_acc, img_f1, img_fdr, img_mdr, _ = evaluate(sampler, model, cfg, val_dataloader, device)
+    acc, rec, f1, fdr, mdr, _ = evaluate(sampler, model, cfg, val_dataloader, device)
 
 
 if __name__ == '__main__':

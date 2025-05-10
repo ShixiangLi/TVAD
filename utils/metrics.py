@@ -175,8 +175,8 @@ def anomaly_pred(original, generated):
 
     score = apply_gaussian_filter(score, sigma=4)
 
-    threshold = torch.quantile(score.view(N, -1), 0.99, dim=1)
-    pred_label = (score >= threshold[:, None, None]).int().cpu().numpy()
+    threshold = torch.quantile(score.view(-1), 0.8)
+    pred_label = (score >= threshold).int().cpu().numpy()
 
     return pred_label
 
@@ -188,23 +188,30 @@ def evaluate(sampler, model, cfg, val_loader, device):
     with torch.no_grad():
         images = []
         for i, (current_sample, video_sample, label) in enumerate(tqdm(val_loader, ncols=100, desc='Testing')):
-            c = current_sample
-            x = video_sample
-            x_T = torch.randn((c.shape[0], 3, cfg.DATA.IMAGE_SIZE, cfg.DATA.IMAGE_SIZE))
-            batch_images = sampler(x_T.to(device), c.to(device)).cpu()
+            c = current_sample.to(device) # Ensure condition is on the correct device
+            # x = video_sample # original video sample, not used directly by sampler input
+            x_T = torch.randn((c.shape[0], 3, cfg.DATA.IMAGE_SIZE, cfg.DATA.IMAGE_SIZE), device=device) # Initial noise on correct device
+            
+            if cfg.DIFFUSION.get('SAMPLER_TYPE', 'DDPM').upper() == 'DDIM':
+                batch_images = sampler(x_T, c,
+                                       num_steps=cfg.DIFFUSION.DDIM_NUM_STEPS,
+                                       eta=cfg.DIFFUSION.DDIM_ETA).cpu()
+            else: # DDPM
+                batch_images = sampler(x_T, c).cpu() # Original DDPM call
             images.append((batch_images + 1) / 2)
             scores = anomaly_pred(x, batch_images)
-            class_metric.addBatch(scores, label.numpy())
+            class_metric.addBatch(np.max(scores, axis=(1, 2)), np.max(label.numpy(), axis=(1, 2)))
             pixel_metric.addBatch(scores, label.numpy())
         images = torch.cat(images, dim=0).numpy()
         img_acc = class_metric.Accuracy()
+        img_rec = class_metric.Recall()
         img_f1 = class_metric.F1Score()
         img_fdr = class_metric.FalsePositiveRate()
         img_mdr = class_metric.FalseNegativeRate()
         pix_acc = pixel_metric.pixelAccuracy()
         pix_mIoU = pixel_metric.meanIntersectionOverUnion()
-        print(f"Image Accuracy: {img_acc:.4f}, Image F1 Score: {img_f1:.4f}, Image FDR: {img_fdr:.4f}, Image MDR: {img_mdr:.4f}")
+        print(f"Image Accuracy: {img_acc:.4f}, Image Recall: {img_rec:.4f}, Image F1 Score: {img_f1:.4f}, Image FDR: {img_fdr:.4f}, Image MDR: {img_mdr:.4f}")
         print(f"Pixel Accuracy: {pix_acc:.4f}, Pixel mIoU: {pix_mIoU:.4f}")
 
         model.train()
-        return img_acc, img_f1, img_fdr, img_mdr, images
+        return img_acc, img_rec, img_f1, img_fdr, img_mdr, images

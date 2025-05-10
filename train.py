@@ -104,15 +104,22 @@ def train():
             # sample
             if cfg.DIFFUSION.SAMPLE_STEP > 0 and step % cfg.DIFFUSION.SAMPLE_STEP == 0 and step > 0:
                 print("\nSampling...")
-                net_model.eval()
+                ema_model.eval()
                 with torch.no_grad():
-                    x_0 = ema_sampler(x_T, c_0)
+                    # x_T is your initial random noise
+                    if cfg.DIFFUSION.get('SAMPLER_TYPE', 'DDPM').upper() == 'DDIM':
+                        x_0 = ema_sampler(x_T, c_0, 
+                                          num_steps=cfg.DIFFUSION.DDIM_NUM_STEPS, 
+                                          eta=cfg.DIFFUSION.DDIM_ETA)
+                    else: # DDPM
+                        x_0 = ema_sampler(x_T, c_0) # Original DDPM call
+
                     grid = (make_grid(x_0) + 1) / 2
                     path = os.path.join(
                         cfg.COMMON.LOGDIR, 'sample', '%d.png' % step)
                     save_image(grid, path)
                     writer.add_image('sample', grid, step)
-                net_model.train()
+                ema_model.train() # Switch back to train mode
 
             # save
             if cfg.TRAIN.SAVE_STEP > 0 and step % cfg.TRAIN.SAVE_STEP == 0 and step > 0:
@@ -130,14 +137,16 @@ def train():
             # evaluate
             if cfg.TEST.EVAL_STEP > 0 and step % cfg.TEST.EVAL_STEP == 0 and step > 0:
                 print("Evaluating...")
-                acc, f1, fdr, mdr, _ = evaluate(net_sampler, net_model, cfg, val_dataloader, device)
-                ema_acc, ema_f1, ema_fdr, ema_mdr, _ = evaluate(ema_sampler, ema_model, cfg, val_dataloader, device)
+                # acc, rec, f1, fdr, mdr, _ = evaluate(net_sampler, net_model, cfg, val_dataloader, device)
+                ema_acc, ema_rec, ema_f1, ema_fdr, ema_mdr, _ = evaluate(ema_sampler, ema_model, cfg, val_dataloader, device)
                 metrics = {
-                    'ACC': acc,
-                    'F1': f1,
-                    'FDR': fdr,
-                    'MDR': mdr,
+                    # 'ACC': acc,
+                    # 'REC': rec,
+                    # 'F1': f1,
+                    # 'FDR': fdr,
+                    # 'MDR': mdr,
                     'EMA_ACC': ema_acc,
+                    'EMA_REC': ema_rec,
                     'EMA_F1': ema_f1,
                     'EMA_FDR': ema_fdr,
                     'EMA_MDR': ema_mdr

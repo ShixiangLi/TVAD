@@ -40,10 +40,16 @@ MODEL:
 DIFFUSION:
   BETA_1: 0.0001
   BETA_T: 0.02
-  MEAN_TYPE: 'epsilon'
-  VAR_TYPE: 'fixedlarge'
+  MEAN_TYPE: 'epsilon'   # Highly recommended for DDIM. Your UNet should predict noise.
+  VAR_TYPE: 'fixedlarge' # Less critical for DDIM sampling itself
   SAMPLE_SIZE: 64
-  SAMPLE_STEP: 5000
+  SAMPLE_STEP: 1      # How often to sample during training
+  
+  # --- New/Modified for DDIM ---
+  SAMPLER_TYPE: 'DDIM'     # Options: 'DDIM', 'DDPM'
+  DDIM_ETA: 0.0            # Stochasticity parameter for DDIM. 0.0 for deterministic.
+  DDIM_NUM_STEPS: 50       # Number of steps for DDIM sampler (e.g., 20, 50, 100, 200).
+                           # This will be much smaller than MODEL.T (e.g., 1000) for speed.
 TEST:
   MODE: 'l2'
   DATASET: fmf_vicu
